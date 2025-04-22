@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Image to Polar Stencil</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      background-color: #f4f4f4;
+      padding: 20px;
+    }
+    canvas {
+      border: 1px solid #ccc;
+      margin-top: 20px;
+    }
+    input, button, textarea {
+      margin: 10px;
+      padding: 10px;
+      font-size: 1em;
+    }
+    textarea {
+      width: 80%;
+      height: 200px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Image to Polar Coordinates</h1>
+  <p>Upload an image to extract black pixels as polar coordinates from the center.</p>
+
+  <input type="file" id="imageUpload" accept="image/*" />
+  <canvas id="imageCanvas" width="400" height="400"></canvas>
+  <canvas id="redrawCanvas" width="400" height="400" style="margin-top: 20px;"></canvas>
+  <h3>Redrawn Image from Polar Coordinates</h3>
+
+  <h3>Polar Coordinates (r, θ in degrees)</h3>
+  <textarea id="log" readonly></textarea>
+
+  <h3>Motor Movements (Arduino Code)</h3>
+  <textarea id="arduinoCodeLog" readonly></textarea>
+
+  <script>
+    const canvas = document.getElementById('imageCanvas');
+    const ctx = canvas.getContext('2d');
+    const logArea = document.getElementById('log');
+    const redrawCanvas = document.getElementById('redrawCanvas');
+    const redrawCtx = redrawCanvas.getContext('2d');
+    const arduinoCodeLog = document.getElementById('arduinoCodeLog');
+    let coordinates = [];
+
+    document.getElementById('imageUpload').addEventListener('change', (event) => {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const img = new Image();
+        img.onload = () => {
+            const scale = Math.min(canvas.width / img.width, canvas.height / img.height);
+            const imgWidth = img.width * scale;
+            const imgHeight = img.height * scale;
+            const xOffset = (canvas.width - imgWidth) / 2;
+            const yOffset = (canvas.height - imgHeight) / 2;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, xOffset, yOffset, imgWidth, imgHeight);
+
+            processImage(xOffset, yOffset, imgWidth, imgHeight);
+        };
+        img.onerror = () => {
+            alert("Failed to load the image. Please try again with a valid image file.");
+        };
+        img.src = URL.createObjectURL(file);
+    });
+
+    function processImage(xOffset, yOffset, width, height) {
+        const imageData = ctx.getImageData(xOffset, yOffset, width, height);
+        const data = imageData.data;
+        coordinates = [];
+        const centerX = canvas.width / 2;
+        const centerY = canvas.height / 2;
+
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const index = (y * width + x) * 4;
+                const avg = (data[index] + data[index + 1] + data[index + 2]) / 3;
+
+                if (avg < 128) { // Threshold for black pixels
+                    const cartX = x + xOffset;
+                    const cartY = y + yOffset;
+                    const dx = cartX - centerX;
+                    const dy = cartY - centerY;
+                    const r = Math.sqrt(dx * dx + dy * dy);
+                    const theta = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+                    coordinates.push({ r, theta });
+                }
+            }
+        }
+
+        if (coordinates.length === 0) {
+            alert("No black pixels detected in the image. Please upload a valid image with black pixels.");
+        } else {
+            logCoordinates(coordinates);
+            generateArduinoCode(coordinates);
+            redrawFromPolar(coordinates, centerX, centerY);
+        }
+    }
+
+    function generateArduinoCode(coords) {
+        const arduinoCommands = `#include <Servo.h>
+
+Servo motorX;
+Servo motorY;
+
+const int motorXPin = 9; // PWM pin for X-axis motor
+const int motorYPin = 10; // PWM pin for Y-axis motor
+
+void setup() {
+  Serial.begin(9600); // Initialize serial communication
+  motorX.attach(motorXPin);
+  motorY.attach(motorYPin);
+
+  Serial.println("Waiting for G-code commands...");
+}
+
+void loop() {
+  if (Serial.available()) {
+    String command = Serial.readStringUntil('\\n'); // Read G-code command
+    if (command.startsWith("G1")) {
+      processGCode(command);
+    }
+  }
+}
+
+void processGCode(String gcode) {
+  int xIndex = gcode.indexOf('X');
+  int yIndex = gcode.indexOf('Y');
+  if (xIndex != -1 && yIndex != -1) {
+    float x = gcode.substring(xIndex + 1, yIndex).toFloat();
+    float y = gcode.substring(yIndex + 1).toFloat();
+
+    // Map Cartesian coordinates to servo angles (adjust ranges as needed)
+    int angleX = map(x, -200, 200, 0, 180); // Adjust -200 to 200 range based on your setup
+    int angleY = map(y, -200, 200, 0, 180);
+
+    motorX.write(angleX);
+    motorY.write(angleY);
+
+    Serial.print("Moving to X: ");
+    Serial.print(x);
+    Serial.print(", Y: ");
+    Serial.println(y);
+  }
+}`;
+
+        arduinoCodeLog.value = arduinoCommands;
+    }
+
+    function logCoordinates(coords) {
+        const text = coords.map(({ r, theta }) =>
+            `r: ${r.toFixed(2)}, θ: ${theta.toFixed(2)}°`
+        ).join('\n');
+        logArea.value = text;
+    }
+
+    function redrawFromPolar(coords, centerX, centerY) {
+        redrawCtx.clearRect(0, 0, redrawCanvas.width, redrawCanvas.height);
+        redrawCtx.fillStyle = 'red';
+
+        coords.forEach(({ r, theta }) => {
+            const thetaRad = (theta * Math.PI) / 180;
+            const x = centerX + r * Math.cos(thetaRad);
+            const y = centerY + r * Math.sin(thetaRad);
+            redrawCtx.fillRect(x, y, 1, 1); // Draw each point as a 1x1 pixel
+        });
+    }
+  </script>
+</body>
+</html>
