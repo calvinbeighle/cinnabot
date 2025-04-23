@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>Image to Polar Stencil</title>
+  <style>
+    body         { font-family: Arial, sans-serif; text-align: center; background: #f4f4f4; padding: 20px; }
+    canvas       { border: 1px solid #ccc; margin-top: 20px; }
+    input,
+    button,
+    textarea     { margin: 10px; padding: 10px; font-size: 1em; }
+    textarea     { width: 80%; height: 200px; }
+  </style>
+</head>
+<body>
+  <h1>Image to Polar Coordinates</h1>
+  <p>Upload an image to extract black pixels as polar coordinates from the center.</p>
+
+  <input type="file" id="imageUpload" accept="image/*" />
+  <canvas id="imageCanvas" width="400" height="400"></canvas>
+  <canvas id="redrawCanvas" width="400" height="400" style="margin-top:20px;"></canvas>
+  <h3>Redrawn Image from Polar Coordinates</h3>
+
+  <h3>Polar Coordinates (r, θ&nbsp;deg)</h3>
+  <textarea id="log" readonly></textarea>
+
+  <h3>Motor Movements (Arduino Sketch)</h3>
+  <textarea id="arduinoCodeLog" readonly></textarea>
+
+  <h3>1. Linear X-Axis Motor Class</h3>
+  <textarea id="linearMotorClassLog" readonly></textarea>
+
+  <h3>2. Rotary Axis Motor Class</h3>
+  <textarea id="rotaryMotorClassLog" readonly></textarea>
+
+  <h3>3. Vibration / Fill Motor Class</h3>
+  <textarea id="vibrationMotorClassLog" readonly></textarea>
+
+  <script>
+    /* ────────── DOM shortcuts ───────────────────────────────── */
+    const canvas   = document.getElementById('imageCanvas');
+    const ctx      = canvas.getContext('2d');
+    const rCanvas  = document.getElementById('redrawCanvas');
+    const rCtx     = rCanvas.getContext('2d');
+
+    const logArea  = document.getElementById('log');
+    const arduino  = document.getElementById('arduinoCodeLog');
+    const linear   = document.getElementById('linearMotorClassLog');
+    const rotary   = document.getElementById('rotaryMotorClassLog');
+    const vib      = document.getElementById('vibrationMotorClassLog');
+
+    let coordinates = [];
+
+    /* ────────── image upload ───────────────────────────────── */
+    document.getElementById('imageUpload').addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const img = new Image();
+      img.onload = () => {
+        /* scale and round so geometry is integer */
+        const scale      = Math.min(canvas.width / img.width, canvas.height / img.height);
+        const wInt       = Math.round(img.width  * scale);
+        const hInt       = Math.round(img.height * scale);
+        const xOffInt    = Math.round((canvas.width  - wInt) / 2);
+        const yOffInt    = Math.round((canvas.height - hInt) / 2);
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, xOffInt, yOffInt, wInt, hInt);
+
+        processImage(xOffInt, yOffInt, wInt, hInt);
+      };
+      img.onerror = () => alert('Failed to load image.');
+      img.src = URL.createObjectURL(file);
+    });
+
+    /* ────────── core work ──────────────────────────────────── */
+    function processImage(xOffset, yOffset, width, height) {
+      const data = ctx.getImageData(xOffset, yOffset, width, height).data;
+      coordinates = [];
+
+      const cx = canvas.width / 2,
+            cy = canvas.height / 2;
+
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const idx = (y * width + x) * 4;
+          const rCh = data[idx];
+          const gCh = data[idx + 1];
+          const bCh = data[idx + 2];
+          const aCh = data[idx + 3];           // alpha (0-255)
+
+          /* ignore fully-transparent pixels first */
+          if (aCh <= 32) continue;             // <≈13 % opaque → treat as empty
+
+          const brightness = (rCh + gCh + bCh) / 3;  // 0-255
+
+          if (brightness < 128) {              // “dark” pixel
+            const cartX = x + xOffset,
+                  cartY = y + yOffset,
+                  dx    = cartX - cx,
+                  dy    = cartY - cy,
+                  r     = Math.hypot(dx, dy),
+                  theta = ((Math.atan2(dy, dx) * 180 / Math.PI) + 360) % 360;
+
+            coordinates.push({ r, theta });
+          }
+        }
+      }
+
+      if (coordinates.length === 0) {
+        alert('No dark pixels detected with current threshold.');
+        return;
+      }
+
+      logCoordinates();
+      emitArduinoStub();
+      emitMotorClasses();
+      redraw(coords = coordinates, cx, cy);
+    }
+
+    /* ────────── helper: list coordinates ───────────────────── */
+    function logCoordinates() {
+      logArea.value = coordinates
+        .map(({ r, theta }) => `r:${r.toFixed(2)} θ:${theta.toFixed(2)}°`)
+        .join('\n');
+    }
+
+    /* ────────── helper: Arduino stub (unchanged) ───────────── */
+    function emitArduinoStub() {
+      arduino.value =
+`// stub sketch – replace with GRBL, AccelStepper, etc.
+#include <ArduinoJson.h>
+#include "motors.h"
+
+void setup() {
+  Serial.begin(115200);
+  // init motors...
+}
+
+void loop() {
+  // stream coordinates as JSON, or hard-code them:
+  //   { "r":123.4, "theta":45.0, "fill":1 }
+}`;
+    }
+
+    /* ────────── helper: C++ motor classes (unchanged) ──────── */
+    function emitMotorClasses() {
+      const rList     = coordinates.map(p => p.r.toFixed(2));
+      const thetaList = coordinates.map(p => p.theta.toFixed(2));
+      const fillList  = coordinates.map(() => 1);
+
+      const fmt = arr =>
+        arr.reduce((acc, v, i) =>
+          acc + ((i % 8 === 0 ? '\n  ' : ' ') + v + (i === arr.length - 1 ? '' : ',')), '') + '\n';
+
+      /* 1. linear radius */
+      linear.value =
+`#pragma once
+#include <AccelStepper.h>
+
+static const float R_SEQ[] PROGMEM = {${fmt(rList)}};
+constexpr uint16_t R_LEN = sizeof(R_SEQ) / sizeof(R_SEQ[0]);
+
+class RadiusSeq {
+  AccelStepper &st; uint16_t idx = 0;
+  static constexpr float STEPS_PER_MM = 200.0f / 8.0f;     // tweak!
+  void target(float px) { st.moveTo(lround(px * STEPS_PER_MM)); }
+public:
+  explicit RadiusSeq(AccelStepper &s) : st(s) {}
+  void begin(float vmax, float acc) {
+    st.setMaxSpeed(vmax); st.setAcceleration(acc); target(R_SEQ[0]);
+  }
+  void run() {
+    if (idx < R_LEN && st.distanceToGo() == 0) target(R_SEQ[++idx]);
+    st.run();
+  }
+  bool done() const { return idx >= R_LEN; }
+};`;
+
+      /* 2. rotary angle */
+      rotary.value =
+`#pragma once
+#include <AccelStepper.h>
+
+static const float A_SEQ[] PROGMEM = {${fmt(thetaList)}};
+constexpr uint16_t A_LEN = sizeof(A_SEQ) / sizeof(A_SEQ[0]);
+
+class AngleSeq {
+  AccelStepper &st; uint16_t idx = 0;
+  static constexpr float SPR = 200.0f * 16.0f;             // 16× μstep
+  void target(float deg) { st.moveTo(lround(deg * SPR / 360.0f)); }
+public:
+  explicit AngleSeq(AccelStepper &s) : st(s) {}
+  void begin(float vmax, float acc) {
+    st.setMaxSpeed(vmax); st.setAcceleration(acc); target(A_SEQ[0]);
+  }
+  void run() {
+    if (idx < A_LEN && st.distanceToGo() == 0) target(A_SEQ[++idx]);
+    st.run();
+  }
+  bool done() const { return idx >= A_LEN; }
+};`;
+
+      /* 3. vibration / fill */
+      vib.value =
+`#pragma once
+#include <Arduino.h>
+
+static const bool FILL_SEQ[] PROGMEM = {${fmt(fillList)}};
+constexpr uint16_t F_LEN = sizeof(FILL_SEQ) / sizeof(FILL_SEQ[0]);
+
+class VibSeq {
+  uint8_t pin; uint16_t idx = 0;
+  void target(bool on) { digitalWrite(pin, on); }
+public:
+  explicit VibSeq(uint8_t p) : pin(p) {}
+  void begin() { pinMode(pin, OUTPUT); target(FILL_SEQ[0]); }
+  void run() { if (idx < F_LEN - 1) target(FILL_SEQ[++idx]); }
+  bool done() const { return idx >= F_LEN - 1; }
+};`;
+    }
+
+    /* ────────── helper: redraw sample points ──────────────── */
+    function redraw(coords, cx, cy) {
+      rCtx.clearRect(0, 0, rCanvas.width, rCanvas.height);
+      rCtx.fillStyle = 'red';
+      coords.forEach(({ r, theta }) => {
+        const t = theta * Math.PI / 180;
+        rCtx.fillRect(cx + r * Math.cos(t), cy + r * Math.sin(t), 1, 1);
+      });
+    }
+  </script>
+</body>
+</html>
