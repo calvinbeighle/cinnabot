@@ -5,230 +5,248 @@
   <meta name="viewport" content="width=device-width,initial-scale=1.0" />
   <title>Image to Polar Stencil</title>
   <style>
-    body         { font-family: Arial, sans-serif; text-align: center; background: #f4f4f4; padding: 20px; }
-    canvas       { border: 1px solid #ccc; margin-top: 20px; }
-    input,
-    button,
-    textarea     { margin: 10px; padding: 10px; font-size: 1em; }
-    textarea     { width: 80%; height: 200px; }
+    body         { font-family: Arial, sans-serif; text-align: center; background:#f4f4f4; padding:20px }
+    canvas       { border:1px solid #ccc; margin-top:20px }
+    input,textarea{ margin:10px; padding:10px; font-size:1em }
+    textarea     { width:80%; height:200px }
   </style>
 </head>
 <body>
   <h1>Image to Polar Coordinates</h1>
-  <p>Upload an image to extract black pixels as polar coordinates from the center.</p>
+  <p>Upload an image to extract black pixels as polar coordinates from the center.<br/>
+     The vibration motor now switches <b>off</b> when travelling.</p>
 
-  <input type="file" id="imageUpload" accept="image/*" />
-  <canvas id="imageCanvas" width="400" height="400"></canvas>
-  <canvas id="redrawCanvas" width="400" height="400" style="margin-top:20px;"></canvas>
+  <input type="file" id="imageUpload" accept="image/*"/>
+  <canvas id="imageCanvas"  width="400" height="400"></canvas>
+  <canvas id="redrawCanvas" width="400" height="400" style="margin-top:20px"></canvas>
   <h3>Redrawn Image from Polar Coordinates</h3>
 
-  <h3>Polar Coordinates (r, θ&nbsp;deg)</h3>
-  <textarea id="log" readonly></textarea>
+  <h3>Polar Coordinates (r, θ deg)</h3>
+  <textarea id="log"                  readonly></textarea>
 
   <h3>Motor Movements (Arduino Sketch)</h3>
-  <textarea id="arduinoCodeLog" readonly></textarea>
+  <textarea id="arduinoCodeLog"       readonly></textarea>
 
   <h3>1. Linear X-Axis Motor Class</h3>
-  <textarea id="linearMotorClassLog" readonly></textarea>
+  <textarea id="linearMotorClassLog"  readonly></textarea>
 
   <h3>2. Rotary Axis Motor Class</h3>
-  <textarea id="rotaryMotorClassLog" readonly></textarea>
+  <textarea id="rotaryMotorClassLog"  readonly></textarea>
 
   <h3>3. Vibration / Fill Motor Class</h3>
   <textarea id="vibrationMotorClassLog" readonly></textarea>
 
   <script>
-    /* ────────── DOM shortcuts ───────────────────────────────── */
-    const canvas   = document.getElementById('imageCanvas');
-    const ctx      = canvas.getContext('2d');
-    const rCanvas  = document.getElementById('redrawCanvas');
-    const rCtx     = rCanvas.getContext('2d');
+    /* ───── DOM shortcuts ───────────────────────────────────── */
+    const cvs   = document.getElementById('imageCanvas');
+    const ctx   = cvs.getContext('2d');
+    const redC  = document.getElementById('redrawCanvas');
+    const rCtx  = redC.getContext('2d');
 
-    const logArea  = document.getElementById('log');
-    const arduino  = document.getElementById('arduinoCodeLog');
-    const linear   = document.getElementById('linearMotorClassLog');
-    const rotary   = document.getElementById('rotaryMotorClassLog');
-    const vib      = document.getElementById('vibrationMotorClassLog');
+    const logTxt   = document.getElementById('log');
+    const inoTxt   = document.getElementById('arduinoCodeLog');
+    const linTxt   = document.getElementById('linearMotorClassLog');
+    const rotTxt   = document.getElementById('rotaryMotorClassLog');
+    const vibTxt   = document.getElementById('vibrationMotorClassLog');
 
-    let coordinates = [];
+    let coordinates = [];           // dark-pixel list (r,θ)
 
-    /* ────────── image upload ───────────────────────────────── */
-    document.getElementById('imageUpload').addEventListener('change', e => {
+    /* ───── image upload ───────────────────────────────────── */
+    document.getElementById('imageUpload').addEventListener('change', e=>{
       const file = e.target.files[0];
-      if (!file) return;
+      if(!file) return;
 
       const img = new Image();
       img.onload = () => {
-        /* scale and round so geometry is integer */
-        const scale      = Math.min(canvas.width / img.width, canvas.height / img.height);
-        const wInt       = Math.round(img.width  * scale);
-        const hInt       = Math.round(img.height * scale);
-        const xOffInt    = Math.round((canvas.width  - wInt) / 2);
-        const yOffInt    = Math.round((canvas.height - hInt) / 2);
+        const scale   = Math.min(cvs.width/img.width, cvs.height/img.height);
+        const wInt    = Math.round(img.width  * scale);
+        const hInt    = Math.round(img.height * scale);
+        const xOffInt = Math.round((cvs.width  - wInt)/2);
+        const yOffInt = Math.round((cvs.height - hInt)/2);
 
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(img, xOffInt, yOffInt, wInt, hInt);
+        ctx.clearRect(0,0,cvs.width,cvs.height);
+        ctx.drawImage(img,xOffInt,yOffInt,wInt,hInt);
 
-        processImage(xOffInt, yOffInt, wInt, hInt);
+        processImage(xOffInt,yOffInt,wInt,hInt);
       };
-      img.onerror = () => alert('Failed to load image.');
+      img.onerror = ()=>alert('Failed to load image.');
       img.src = URL.createObjectURL(file);
     });
 
-    /* ────────── core work ──────────────────────────────────── */
-    function processImage(xOffset, yOffset, width, height) {
-      const data = ctx.getImageData(xOffset, yOffset, width, height).data;
+    /* ───── core work ──────────────────────────────────────── */
+    function processImage(xOff,yOff,w,h){
+      const data = ctx.getImageData(xOff,yOff,w,h).data;
       coordinates = [];
 
-      const cx = canvas.width / 2,
-            cy = canvas.height / 2;
+      const cx = cvs.width/2, cy = cvs.height/2;
 
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const idx = (y * width + x) * 4;
-          const rCh = data[idx];
-          const gCh = data[idx + 1];
-          const bCh = data[idx + 2];
-          const aCh = data[idx + 3];           // alpha (0-255)
-
-          /* ignore fully-transparent pixels first */
-          if (aCh <= 32) continue;             // <≈13 % opaque → treat as empty
-
-          const brightness = (rCh + gCh + bCh) / 3;  // 0-255
-
-          if (brightness < 128) {              // “dark” pixel
-            const cartX = x + xOffset,
-                  cartY = y + yOffset,
-                  dx    = cartX - cx,
-                  dy    = cartY - cy,
-                  r     = Math.hypot(dx, dy),
-                  theta = ((Math.atan2(dy, dx) * 180 / Math.PI) + 360) % 360;
-
-            coordinates.push({ r, theta });
+      for(let y=0;y<h;y++){
+        for(let x=0;x<w;x++){
+          const i=(y*w+x)<<2;
+          if(data[i+3] <= 32) continue;                // skip transparent
+          const avg = (data[i]+data[i+1]+data[i+2])/3;
+          if(avg < 128){                               // dark enough
+            const dx = (x+xOff)-cx, dy=(y+yOff)-cy;
+            const r  = Math.hypot(dx,dy);
+            const th = (Math.atan2(dy,dx)*180/Math.PI+360)%360;
+            coordinates.push({r,theta:th});
           }
         }
       }
 
-      if (coordinates.length === 0) {
-        alert('No dark pixels detected with current threshold.');
-        return;
-      }
+      if(!coordinates.length){ alert('No dark pixels detected.'); return; }
 
-      logCoordinates();
+      logTxt.value = coordinates
+        .map(({r,theta})=>`r:${r.toFixed(2)} θ:${theta.toFixed(2)}°`).join('\n');
+
       emitArduinoStub();
-      emitMotorClasses();
-      redraw(coords = coordinates, cx, cy);
+      generateMotorClasses();          // builds R/A/FILL sequences
+      redraw(coordinates,cx,cy);
     }
 
-    /* ────────── helper: list coordinates ───────────────────── */
-    function logCoordinates() {
-      logArea.value = coordinates
-        .map(({ r, theta }) => `r:${r.toFixed(2)} θ:${theta.toFixed(2)}°`)
-        .join('\n');
-    }
-
-    /* ────────── helper: Arduino stub (unchanged) ───────────── */
-    function emitArduinoStub() {
-      arduino.value =
+    /* ───── Arduino stub – unchanged ‐──────────────────────── */
+    function emitArduinoStub(){
+      inoTxt.value =
 `// stub sketch – replace with GRBL, AccelStepper, etc.
 #include <ArduinoJson.h>
 #include "motors.h"
 
-void setup() {
+void setup(){
   Serial.begin(115200);
-  // init motors...
+  // init motors…
 }
 
-void loop() {
+void loop(){
   // stream coordinates as JSON, or hard-code them:
   //   { "r":123.4, "theta":45.0, "fill":1 }
 }`;
     }
 
-    /* ────────── helper: C++ motor classes (unchanged) ──────── */
-    function emitMotorClasses() {
-      const rList     = coordinates.map(p => p.r.toFixed(2));
-      const thetaList = coordinates.map(p => p.theta.toFixed(2));
-      const fillList  = coordinates.map(() => 1);
+    /* ───── generate C++ motor classes ‐‐ NEW FILL LOGIC ───── */
+    function generateMotorClasses(){
+      const TRAVEL_GAP_PX = 1.0;       // ↑ gap > this ⇒ “travelling” → motor off
 
-      const fmt = arr =>
-        arr.reduce((acc, v, i) =>
-          acc + ((i % 8 === 0 ? '\n  ' : ' ') + v + (i === arr.length - 1 ? '' : ',')), '') + '\n';
+      const rSeq     = [];
+      const aSeq     = [];
+      const fillSeq  = [];
 
-      /* 1. linear radius */
-      linear.value =
+      if(!coordinates.length) return;
+
+      /* helper to push a waypoint */
+      const push = (p, fill) => {
+        rSeq.push(p.r.toFixed(2));
+        aSeq.push(p.theta.toFixed(2));
+        fillSeq.push(fill);
+      };
+
+      /* ─── build sequences ──────────────────────────────── */
+      // 1) start: move to first point with motor OFF
+      push(coordinates[0], 0);
+
+      for(let i=0;i<coordinates.length;i++){
+        const cur = coordinates[i];
+        /* 2) once at the point → turn motor ON */
+        push(cur, 1);
+
+        /* 3) look-ahead: if next point is far ⇒ insert OFF waypoint */
+        const nxt = coordinates[i+1];
+        if(nxt){
+          const dx = cur.r*Math.cos(cur.theta*Math.PI/180) -
+                     nxt.r*Math.cos(nxt.theta*Math.PI/180);
+          const dy = cur.r*Math.sin(cur.theta*Math.PI/180) -
+                     nxt.r*Math.sin(nxt.theta*Math.PI/180);
+          if(Math.hypot(dx,dy) > TRAVEL_GAP_PX){
+            // duplicate current coord, motor OFF, so it stays off
+            push(cur, 0);
+          }
+        }
+      }
+      /* 4) after last pixel, leave motor OFF */
+      push(coordinates.at(-1), 0);
+
+      /* ─── format helper (8 per row) ─────────────────────── */
+      const fmt = arr => arr.reduce((s,v,i)=>
+        s + (i%8===0?'\n  ':' ') + v + (i===arr.length-1?'':','), '')+'\n';
+
+      /* 1. Radius motor */
+      linTxt.value =
 `#pragma once
 #include <AccelStepper.h>
+#if defined(__AVR__)
+  #include <avr/pgmspace.h>          // UNO, Nano, Mega …
+#else
+  #include <pgmspace.h>              // ESP32, ESP8266, SAMD, RP2040 …
+#endif
 
-static const float R_SEQ[] PROGMEM = {${fmt(rList)}};
-constexpr uint16_t R_LEN = sizeof(R_SEQ) / sizeof(R_SEQ[0]);
+static const float R_SEQ[] PROGMEM = {${fmt(rSeq)}};
+constexpr uint16_t R_LEN = sizeof(R_SEQ)/sizeof(R_SEQ[0]);
 
-class RadiusSeq {
-  AccelStepper &st; uint16_t idx = 0;
-  static constexpr float STEPS_PER_MM = 200.0f / 8.0f;     // tweak!
-  void target(float px) { st.moveTo(lround(px * STEPS_PER_MM)); }
+class RadiusSeq{
+  AccelStepper& st; uint16_t i=0;
+  static constexpr float STEPS_PER_MM = 200.0f/8.0f;   // tweak!
+  void tgt(float px){ st.moveTo(lround(px*STEPS_PER_MM)); }
 public:
-  explicit RadiusSeq(AccelStepper &s) : st(s) {}
-  void begin(float vmax, float acc) {
-    st.setMaxSpeed(vmax); st.setAcceleration(acc); target(R_SEQ[0]);
-  }
-  void run() {
-    if (idx < R_LEN && st.distanceToGo() == 0) target(R_SEQ[++idx]);
-    st.run();
-  }
-  bool done() const { return idx >= R_LEN; }
+  explicit RadiusSeq(AccelStepper& s):st(s){}
+  void begin(float vmax,float acc){ st.setMaxSpeed(vmax); st.setAcceleration(acc); tgt(R_SEQ[0]); }
+  void run(){ if(i<R_LEN-1 && st.distanceToGo()==0) tgt(R_SEQ[++i]); st.run(); }
+  bool done()const{ return i>=R_LEN-1; }
 };`;
 
-      /* 2. rotary angle */
-      rotary.value =
+      /* 2. Angle motor */
+      rotTxt.value =
 `#pragma once
 #include <AccelStepper.h>
+  #if defined(__AVR__)
+  #include <avr/pgmspace.h>          // UNO, Nano, Mega …
+#else
+  #include <pgmspace.h>              // ESP32, ESP8266, SAMD, RP2040 …
+#endif
 
-static const float A_SEQ[] PROGMEM = {${fmt(thetaList)}};
-constexpr uint16_t A_LEN = sizeof(A_SEQ) / sizeof(A_SEQ[0]);
+static const float A_SEQ[] PROGMEM = {${fmt(aSeq)}};
+constexpr uint16_t A_LEN = sizeof(A_SEQ)/sizeof(A_SEQ[0]);
 
-class AngleSeq {
-  AccelStepper &st; uint16_t idx = 0;
-  static constexpr float SPR = 200.0f * 16.0f;             // 16× μstep
-  void target(float deg) { st.moveTo(lround(deg * SPR / 360.0f)); }
+class AngleSeq{
+  AccelStepper& st; uint16_t i=0;
+  static constexpr float SPR = 200.0f*16.0f;           // 16× μstep
+  void tgt(float deg){ st.moveTo(lround(deg*SPR/360.0f)); }
 public:
-  explicit AngleSeq(AccelStepper &s) : st(s) {}
-  void begin(float vmax, float acc) {
-    st.setMaxSpeed(vmax); st.setAcceleration(acc); target(A_SEQ[0]);
-  }
-  void run() {
-    if (idx < A_LEN && st.distanceToGo() == 0) target(A_SEQ[++idx]);
-    st.run();
-  }
-  bool done() const { return idx >= A_LEN; }
+  explicit AngleSeq(AccelStepper& s):st(s){}
+  void begin(float vmax,float acc){ st.setMaxSpeed(vmax); st.setAcceleration(acc); tgt(A_SEQ[0]); }
+  void run(){ if(i<A_LEN-1 && st.distanceToGo()==0) tgt(A_SEQ[++i]); st.run(); }
+  bool done()const{ return i>=A_LEN-1; }
 };`;
 
-      /* 3. vibration / fill */
-      vib.value =
+      /* 3. Vibration / Fill motor – new OFF/ON pattern */
+      vibTxt.value =
 `#pragma once
 #include <Arduino.h>
+  #if defined(__AVR__)
+  #include <avr/pgmspace.h>          // UNO, Nano, Mega …
+#else
+  #include <pgmspace.h>              // ESP32, ESP8266, SAMD, RP2040 …
+#endif
 
-static const bool FILL_SEQ[] PROGMEM = {${fmt(fillList)}};
-constexpr uint16_t F_LEN = sizeof(FILL_SEQ) / sizeof(FILL_SEQ[0]);
+static const bool FILL_SEQ[] PROGMEM = {${fmt(fillSeq)}};
+constexpr uint16_t F_LEN = sizeof(FILL_SEQ)/sizeof(FILL_SEQ[0]);
 
-class VibSeq {
-  uint8_t pin; uint16_t idx = 0;
-  void target(bool on) { digitalWrite(pin, on); }
+class VibSeq{
+  uint8_t pin; uint16_t i=0;
+  void tgt(bool on){ digitalWrite(pin,on); }
 public:
-  explicit VibSeq(uint8_t p) : pin(p) {}
-  void begin() { pinMode(pin, OUTPUT); target(FILL_SEQ[0]); }
-  void run() { if (idx < F_LEN - 1) target(FILL_SEQ[++idx]); }
-  bool done() const { return idx >= F_LEN - 1; }
+  explicit VibSeq(uint8_t p):pin(p){}
+  void begin(){ pinMode(pin,OUTPUT); tgt(FILL_SEQ[0]); }
+  void run(){ if(i<F_LEN-1) tgt(FILL_SEQ[++i]); }
+  bool done()const{ return i>=F_LEN-1; }
 };`;
     }
 
-    /* ────────── helper: redraw sample points ──────────────── */
-    function redraw(coords, cx, cy) {
-      rCtx.clearRect(0, 0, rCanvas.width, rCanvas.height);
-      rCtx.fillStyle = 'red';
-      coords.forEach(({ r, theta }) => {
-        const t = theta * Math.PI / 180;
-        rCtx.fillRect(cx + r * Math.cos(t), cy + r * Math.sin(t), 1, 1);
+    /* ───── redraw preview ────────────────────────────────── */
+    function redraw(coords,cx,cy){
+      rCtx.clearRect(0,0,redC.width,redC.height);
+      rCtx.fillStyle='red';
+      coords.forEach(({r,theta})=>{
+        const t = theta*Math.PI/180;
+        rCtx.fillRect(cx+r*Math.cos(t), cy+r*Math.sin(t), 1,1);
       });
     }
   </script>
